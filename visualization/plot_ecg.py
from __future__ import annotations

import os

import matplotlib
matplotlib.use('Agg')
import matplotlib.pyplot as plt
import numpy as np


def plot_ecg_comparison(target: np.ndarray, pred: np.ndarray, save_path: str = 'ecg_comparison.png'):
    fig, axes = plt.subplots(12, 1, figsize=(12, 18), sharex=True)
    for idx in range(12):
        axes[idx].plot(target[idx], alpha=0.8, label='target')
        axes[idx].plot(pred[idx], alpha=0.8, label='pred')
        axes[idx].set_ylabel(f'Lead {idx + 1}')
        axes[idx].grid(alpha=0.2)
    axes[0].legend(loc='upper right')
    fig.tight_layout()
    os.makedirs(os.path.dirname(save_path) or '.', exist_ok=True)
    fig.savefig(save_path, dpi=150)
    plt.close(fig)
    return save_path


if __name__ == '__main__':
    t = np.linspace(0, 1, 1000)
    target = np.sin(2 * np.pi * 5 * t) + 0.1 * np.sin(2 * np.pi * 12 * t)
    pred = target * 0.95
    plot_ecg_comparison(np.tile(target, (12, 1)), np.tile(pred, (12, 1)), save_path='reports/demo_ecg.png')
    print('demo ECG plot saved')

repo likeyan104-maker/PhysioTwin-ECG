@@ -1,0 +1,49 @@
+inference/infer.py
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+
+import numpy as np
+import torch
+
+from models.baseline_unet import MultiScaleECGReconstructionNet
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Run inference on a trained PhysioTwin-ECG model')
+    parser.add_argument('--checkpoint', type=str, default='checkpoints/baseline.pt')
+    parser.add_argument('--input', type=str, default='')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    device = torch.device(args.device)
+    model = MultiScaleECGReconstructionNet(in_channels=1, out_channels=12).to(device)
+    ckpt = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(ckpt['model_state'])
+    model.eval()
+
+    if args.input:
+        arr = np.load(args.input, allow_pickle=True)
+        if arr.ndim == 1:
+            arr = arr[np.newaxis, np.newaxis, :]
+        elif arr.ndim == 2:
+            arr = arr[np.newaxis, :, :]
+        x = torch.tensor(arr, dtype=torch.float32, device=device)
+    else:
+        x = torch.randn(1, 1, 60000, device=device)
+
+    with torch.no_grad():
+        pred = model(x)
+
+    out_path = os.path.join('checkpoints', 'inference_output.npy')
+    np.save(out_path, pred.cpu().numpy())
+    print(f'output saved to {out_path}')
+
+
+if __name__ == '__main__':
+    main()

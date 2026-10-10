@@ -1,0 +1,55 @@
+train/train_diffusion.py
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+
+import torch
+from torch.utils.data import DataLoader
+
+from datasets.ecg_dataset import build_synthetic_dataset
+from models.diffusion_model import LatentDiffusionResidualModel
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train residual diffusion model for PhysioTwin-ECG')
+    parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--epochs', type=int, default=2)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--save-dir', type=str, default='checkpoints')
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    os.makedirs(args.save_dir, exist_ok=True)
+    device = torch.device(args.device)
+
+    train_ds, _ = build_synthetic_dataset(num_examples=16, input_mode='single', fs=500)
+    loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    model = LatentDiffusionResidualModel(in_channels=12).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+
+    for epoch in range(args.epochs):
+        model.train()
+        total = 0.0
+        for x, y in loader:
+            x = x.to(device)
+            y = y.to(device)
+            residual = y - torch.mean(y, dim=1, keepdim=True)
+            optimizer.zero_grad()
+            pred = model(residual)
+            loss = torch.mean((pred - residual) ** 2)
+            loss.backward()
+            optimizer.step()
+            total += loss.item()
+        print(f'epoch={epoch + 1:02d} loss={total / max(1, len(loader)):.6f}')
+
+    torch.save(model.state_dict(), os.path.join(args.save_dir, 'diffusion_residual.pt'))
+    print(f'checkpoint saved to {os.path.join(args.save_dir, "diffusion_residual.pt")}')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,116 @@
+train/train_baseline.py
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+
+from datasets.ecg_dataset import ECGDataset, build_synthetic_dataset, load_ecg_dataset
+from models.baseline_unet import MultiScaleECGReconstructionNet
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train PhysioTwin-ECG baseline model')
+    parser.add_argument('--data-dir', type=str, default='data')
+    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--synthetic', action='store_true')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--save-dir', type=str, default='checkpoints')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--resume', type=str, default='')
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    set_seed(args.seed)
+    device = torch.device(args.device)
+    os.makedirs(args.save_dir, exist_ok=True)
+
+    if args.synthetic or not os.path.isdir(args.data_dir):
+        train_ds, val_ds = build_synthetic_dataset(num_examples=64, input_mode='single', fs=500)
+    else:
+        inputs, targets = load_ecg_dataset(args.data_dir, input_mode='single')
+        train_ds = ECGDataset(inputs[: int(0.8 * len(inputs))], targets[: int(0.8 * len(targets))], input_mode='single')
+        val_ds = ECGDataset(inputs[int(0.8 * len(inputs)):], targets[int(0.8 * len(targets)):], input_mode='single')
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+
+    model = MultiScaleECGReconstructionNet(in_channels=1, out_channels=12).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    start_epoch = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device)
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optimizer_state'])
+        start_epoch = ckpt.get('epoch', 0)
+
+    best_val = float('inf')
+    history = []
+    for epoch in range(start_epoch, args.epochs):
+        model.train()
+        running_loss = 0.0
+        for batch_idx, (x, y) in enumerate(train_loader):
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad()
+            pred = model(x)
+            loss = F.mse_loss(pred, y)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+
+        train_loss = running_loss / max(1, len(train_loader))
+
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x = x.to(device)
+                y = y.to(device)
+                pred = model(x)
+                val_loss += F.mse_loss(pred, y).item()
+        val_loss /= max(1, len(val_loader))
+
+        scheduler.step()
+        history.append({'epoch': epoch + 1, 'train_loss': train_loss, 'val_loss': val_loss})
+        print(f'epoch={epoch + 1:02d} train_loss={train_loss:.6f} val_loss={val_loss:.6f}')
+
+        if val_loss < best_val:
+            best_val = val_loss
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'val_loss': val_loss,
+            }, os.path.join(args.save_dir, 'baseline.pt'))
+
+    with open(os.path.join(args.save_dir, 'training_history.json'), 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2)
+
+    print(f'Best checkpoint saved to {os.path.join(args.save_dir, "baseline.pt")}')
+
+
+if __name__ == '__main__':
+    main()

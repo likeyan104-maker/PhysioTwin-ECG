@@ -1,0 +1,206 @@
+datasets/ecg_dataset.py
+from __future__ import annotations
+
+import os
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import h5py
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+
+
+LEAD_NAMES = [
+    "I", "II", "III", "aVR", "aVL", "aVF",
+    "V1", "V2", "V3", "V4", "V5", "V6"
+]
+
+
+def generate_beat_template(length: int = 400, phase: float = 0.0) -> np.ndarray:
+    """Generate a synthetic ECG beat template with P, QRS, and T-wave components."""
+    t = np.linspace(-0.25, 0.35, length)
+    p_wave = 0.18 * np.exp(-((t + 0.12) / 0.03) ** 2)
+    qrs = 0.65 * np.exp(-((t - 0.0) / 0.012) ** 2) - 0.35 * np.exp(-((t + 0.02) / 0.015) ** 2)
+    t_wave = 0.22 * np.exp(-((t - 0.18) / 0.08) ** 2)
+    template = p_wave + qrs + t_wave
+    template = template * (1.0 + 0.08 * np.sin(2 * np.pi * (t + phase)))
+    return template.astype(np.float32)
+
+
+def generate_synthetic_12lead_ecg(
+    num_samples: int = 60000,
+    fs: int = 500,
+    heart_rate_bpm: float = 70.0,
+    lead_bias: Optional[float] = None,
+    noise_std: float = 0.02,
+) -> np.ndarray:
+    """Generate a synthetic 12-lead ECG signal for validation and smoke tests."""
+    t = np.arange(num_samples) / fs
+    rr_interval = 60.0 / heart_rate_bpm
+    beats = int(num_samples / (fs * rr_interval)) + 2
+    signal = np.zeros((12, num_samples), dtype=np.float32)
+
+    for lead_idx in range(12):
+        base = np.zeros(num_samples, dtype=np.float32)
+        lead_scale = 0.8 + 0.5 * (lead_idx / 11.0)
+        phase = lead_idx * 0.05
+        for beat_idx in range(beats):
+            beat_center = beat_idx * fs * rr_interval
+            start = int(beat_center)
+            if start >= num_samples:
+                break
+            end = min(num_samples, start + 400)
+            beat = generate_beat_template(length=end-start, phase=phase)
+            base[start:end] += beat * lead_scale
+
+        baseline = 0.03 * np.sin(2 * np.pi * 0.3 * t + phase)
+        noise = noise_std * np.random.randn(num_samples)
+        signal[lead_idx] = base + baseline + noise
+
+    # Create realistic lead relationships approximating 12-lead ECG geometry.
+    # I is the main signal, II and III follow from common vectorcardiographic assumptions.
+    signal[0] = signal[0] * 1.0
+    signal[1] = 0.85 * signal[0] + 0.4 * signal[2] + 0.05 * np.sin(2 * np.pi * 0.5 * t)
+    signal[2] = signal[1] - signal[0]
+    signal[3] = -(signal[0] + signal[1]) / 2.0
+    signal[4] = signal[0] - signal[1] / 2.0
+    signal[5] = signal[1] - signal[0] / 2.0
+
+    # Chest leads: create lead-specific morphology shifts.
+    chest = np.stack([
+        0.25 * np.sin(2 * np.pi * 0.8 * t + 0.5 * phase),
+        0.35 * np.sin(2 * np.pi * 0.85 * t + 1.0 * phase),
+        0.45 * np.sin(2 * np.pi * 0.9 * t + 1.4 * phase),
+        0.55 * np.sin(2 * np.pi * 0.95 * t + 1.8 * phase),
+        0.48 * np.sin(2 * np.pi * 1.0 * t + 2.1 * phase),
+        0.40 * np.sin(2 * np.pi * 1.05 * t + 2.5 * phase),
+    ], axis=0)
+    signal[6:12] = signal[6:12] + chest
+
+    if lead_bias is not None:
+        signal = signal * (1.0 + lead_bias)
+
+    return signal.astype(np.float32)
+
+
+def generate_synthetic_low_lead_dataset(
+    num_samples: int = 60000,
+    fs: int = 500,
+    num_examples: int = 32,
+    lead_mode: str = "single",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return low-lead input and 12-lead target arrays for training/validation."""
+    inputs = []
+    targets = []
+    for _ in range(num_examples):
+        target = generate_synthetic_12lead_ecg(num_samples=num_samples, fs=fs)
+        if lead_mode == "single":
+            input_sig = target[0:1].copy()
+        elif lead_mode == "six":
+            six_leads = np.vstack([target[0], target[1], target[2], target[3], target[4], target[5]])
+            input_sig = six_leads.astype(np.float32)
+        else:
+            raise ValueError(f"Unsupported lead mode: {lead_mode}")
+        inputs.append(input_sig)
+        targets.append(target)
+    return np.stack(inputs), np.stack(targets)
+
+
+class ECGDataset(Dataset):
+    def __init__(
+        self,
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        input_mode: str = "single",
+        transform: Optional[callable] = None,
+    ):
+        self.inputs = inputs.astype(np.float32)
+        self.targets = targets.astype(np.float32)
+        self.input_mode = input_mode
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        x = self.inputs[idx]
+        y = self.targets[idx]
+        if self.transform is not None:
+            x, y = self.transform(x, y)
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+
+
+def load_ecg_dataset(data_dir: str, input_mode: str = "single") -> Tuple[np.ndarray, np.ndarray]:
+    """Load a dataset from a directory or from numpy files.
+
+    If no dataset exists, a synthetic dataset is created for smoke validation.
+    """
+    if not os.path.isdir(data_dir):
+        return generate_synthetic_low_lead_dataset(num_examples=32, lead_mode=input_mode)
+
+    file_paths = []
+    for root, _, files in os.walk(data_dir):
+        for fname in files:
+            if fname.endswith(('.npy', '.npz', '.csv', '.h5', '.hdf5', '.mat')):
+                file_paths.append(os.path.join(root, fname))
+
+    if not file_paths:
+        return generate_synthetic_low_lead_dataset(num_examples=32, lead_mode=input_mode)
+
+    arrays = []
+    for fpath in file_paths:
+        if fpath.endswith('.npy'):
+            arr = np.load(fpath, allow_pickle=True)
+            if arr.ndim == 2:
+                arrays.append(arr)
+        elif fpath.endswith('.npz'):
+            obj = np.load(fpath, allow_pickle=True)
+            for key in obj.files:
+                arr = np.asarray(obj[key])
+                if arr.ndim >= 2:
+                    arrays.append(arr)
+        elif fpath.endswith('.csv'):
+            df = pd.read_csv(fpath)
+            arrays.append(df.to_numpy(dtype=np.float32))
+        elif fpath.endswith(('.h5', '.hdf5', '.mat')):
+            try:
+                with h5py.File(fpath, 'r') as h:
+                    for key in h.keys():
+                        arr = np.asarray(h[key])
+                        if arr.ndim >= 2:
+                            arrays.append(arr)
+            except Exception:
+                continue
+
+    if not arrays:
+        return generate_synthetic_low_lead_dataset(num_examples=32, lead_mode=input_mode)
+
+    stack = np.stack([np.asarray(arr, dtype=np.float32) for arr in arrays if np.asarray(arr).ndim >= 2])
+    if stack.shape[-1] < 60000:
+        return generate_synthetic_low_lead_dataset(num_examples=32, lead_mode=input_mode)
+
+    if input_mode == "single":
+        inputs = stack[:, 0:1, :]
+    elif input_mode == "six":
+        inputs = stack[:, 0:6, :]
+    else:
+        raise ValueError(f"Unsupported input_mode: {input_mode}")
+
+    targets = stack
+    return inputs, targets
+
+
+def build_synthetic_dataset(num_examples: int = 64, input_mode: str = "single", fs: int = 500) -> Tuple[ECGDataset, ECGDataset]:
+    inputs, targets = generate_synthetic_low_lead_dataset(num_examples=num_examples, fs=fs, lead_mode=input_mode)
+    n_train = int(0.8 * len(inputs))
+    train_ds = ECGDataset(inputs[:n_train], targets[:n_train], input_mode=input_mode)
+    val_ds = ECGDataset(inputs[n_train:], targets[n_train:], input_mode=input_mode)
+    return train_ds, val_ds
+
+
+if __name__ == '__main__':
+    x, y = generate_synthetic_low_lead_dataset(num_examples=2, lead_mode='single')
+    print('input shape:', x.shape)
+    print('target shape:', y.shape)
+    print('lead_names:', LEAD_NAMES)

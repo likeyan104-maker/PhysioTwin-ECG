@@ -1,0 +1,39 @@
+configs/ablation.yaml
+# Ablation configuration for PhysioTwin-ECG
+project_name: "PhysioTwin-ECG-ablation"
+seed: 42
+
+# data
+sample_rate: 500
+signal_length: 60000
+num_leads_in: 6
+num_leads_out: 12
+
+# training
+batch_size: 8
+epochs: 20
+learning_rate: 0.0001
+weight_decay: 0.00001
+amp: true
+device: "cuda"
+
+# model choices
+model_name: "baseline_unet"
+use_physiology: true
+use_device_embedding: true
+use_diffusion: true
+
+# synthetic validation
+synthetic: true
+n_subjects: 24
+n_channels: 12
+
+# output
+output_dir: "checkpoints"
+log_dir: "reports"
+
+eval_csv_name: "ablation_results.csv"
+
+# real-data constraints
+expected_sampling_rate: 500
+minimum_signal_length: 60000

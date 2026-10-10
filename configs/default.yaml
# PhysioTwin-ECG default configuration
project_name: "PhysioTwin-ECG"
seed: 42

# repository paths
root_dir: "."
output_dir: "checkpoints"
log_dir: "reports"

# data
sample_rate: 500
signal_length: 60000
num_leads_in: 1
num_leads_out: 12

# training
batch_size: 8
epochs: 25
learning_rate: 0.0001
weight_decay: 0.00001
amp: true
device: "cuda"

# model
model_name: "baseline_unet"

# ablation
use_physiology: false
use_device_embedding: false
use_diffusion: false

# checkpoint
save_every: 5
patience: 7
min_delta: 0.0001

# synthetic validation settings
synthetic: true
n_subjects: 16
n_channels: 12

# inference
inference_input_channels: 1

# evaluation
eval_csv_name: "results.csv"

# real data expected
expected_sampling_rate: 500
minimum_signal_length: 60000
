@@ -1,0 +1,180 @@
+# PhysioTwin-ECG
+
+PhysioTwin-ECG is a research-oriented Python project for reconstructing standard 12-lead ECG from low-lead wearable ECG signals. It is designed to support:
+
+- Task A: single-lead ECG -> 12-lead ECG (I-lead input)
+- Task B: six-lead ECG -> 12-lead ECG (I, II, III, aVR, aVL, aVF)
+- 500 Hz fixed sampling rate
+- 120 s continuous evaluation window
+- real metrics: Pearson correlation coefficient and RMSE
+- device-aware adaptation for smart scales and six-lead devices
+- deterministic reconstruction baseline + residual diffusion refinement
+- physiologically consistent constraints
+
+This repository is organized around a staged research workflow:
+
+1. Step 1: repository and data audit
+2. Step 2: preprocessing and evaluation pipeline
+3. Step 3: baseline model training
+4. Step 4: physiology-informed losses
+5. Step 5: residual diffusion model
+6. Step 6: fusion and ablation studies
+
+## Project structure
+
+```text
+PhysioTwin-ECG/
+├── data/
+├── reports/
+├── configs/
+│   ├── default.yaml
+│   └── ablation.yaml
+├── models/
+│   ├── __init__.py
+│   ├── baseline_unet.py
+│   ├── transformer_encoder.py
+│   ├── diffusion_model.py
+│   └── physiology.py
+├── datasets/
+│   ├── __init__.py
+│   └── ecg_dataset.py
+├── train/
+│   ├── __init__.py
+│   ├── train_baseline.py
+│   ├── train_physiology.py
+│   └── train_diffusion.py
+├── evaluation/
+│   ├── __init__.py
+│   └── evaluate.py
+├── inference/
+│   ├── __init__.py
+│   └── infer.py
+├── visualization/
+│   ├── __init__.py
+│   └── plot_ecg.py
+├── checkpoints/
+├── .gitignore
+├── data_audit.py
+├── requirements.txt
+├── setup.cfg
+├── README.md
+└── LICENSE
+```
+
+## Core goals
+
+- Build a robust baseline for deterministic 12-lead reconstruction
+- Prioritize quality of V1-V6 chest leads
+- Add credible physiological constraints instead of black-box assumptions
+- Optional diffusion residual branch for residual learning and uncertainty analysis
+- Provide reproducible training, evaluation, and checkpoint logic
+
+## minimal environment setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Step 1: Data audit
+
+To inspect the repository data and generate a report:
+
+```bash
+python data_audit.py --data-dir data --output-dir reports
+```
+
+This produces:
+
+- reports/summary.json
+- reports/summary.csv
+- reports/data_structure_report.txt
+
+At the current moment, the repo contains only placeholder data files; the generated audit report reflects that the dataset is not yet populated with real ECG recordings.
+
+## Synthetic validation pipeline
+
+Because no raw dataset is present in this repository, the project includes a synthetic ECG generator used for verification of the training pipeline. This allows the full training + evaluation loop to run and validate code path integrity without fabricating Real ECG results.
+
+### Train baseline on synthetic data
+
+```bash
+python train/train_baseline.py --epochs 3 --batch-size 8 --synthetic --device cpu --save-dir checkpoints
+```
+
+### Train physiology-aware baseline
+
+```bash
+python train/train_physiology.py --epochs 3 --batch-size 8 --synthetic --device cpu --save-dir checkpoints
+```
+
+### Run evaluation
+
+```bash
+python evaluation/evaluate.py --checkpoint checkpoints/baseline.pt --synthetic --output-dir reports
+```
+
+## Real-data usage
+
+When actual ECG data is added to the `data/` directory, the loader in `datasets/ecg_dataset.py` can automatically read:
+
+- CSV
+- MAT
+- NPY
+- HDF5
+
+The intended output for real data is a 500Hz, 12-lead signal aligned to 60000 samples per lead (120 s). Real data should be organized into directories or files with subject/device metadata, and the code should be adapted to the exact file schema in the dataset.
+
+## Model design
+
+### Deterministic Reconstruction Branch
+
+The baseline model is a multi-scale 1D CNN/U-Net style reconstruction model with the following capabilities:
+
+- single-lead input mode: [B, 1, L] -> [B, 12, L]
+- six-lead input mode: [B, 6, L] -> [B, 12, L]
+- residual-style feature extraction
+- output support for 12 leads
+
+### Physiological Constraint Module
+
+This module includes:
+
+- algebraic lead constraints
+- morphology-aware loss components
+- frequency-domain loss
+- signal consistency regularization
+
+### Generative Residual Branch
+
+A latent residual diffusion model is included to learn the difference between deterministic reconstruction and target ECG. The architecture supports residual prediction and DDPM/DDIM-inspired sampling flow.
+
+## Evaluation metrics
+
+The evaluation logic computes:
+
+- per lead Pearson correlation coefficient
+- RMSE per lead
+- V1-V6 average metrics
+- device-average metrics when device metadata is available
+
+The script writes a CSV and optional visualization for prediction-vs-target comparison.
+
+## Safety and integrity
+
+This project is built under the following rules:
+
+- no test-label correction
+- no data leakage
+- no fabricated results
+- metrics are computed from real code paths
+- the synthetic validation pipeline is explicitly separate from real-data training
+
+## License
+
+MIT
+
+## Notes
+
+This repository is intentionally structured for research use and competition preparation. It is a production-quality scaffold with a working synthetic verification pipeline and a real engineering structure for future expansion with actual medical data.

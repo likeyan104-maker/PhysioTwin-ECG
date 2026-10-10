@@ -1,0 +1,72 @@
+models/physiology.py
+from __future__ import annotations
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from scipy import signal
+
+
+class PhysiologicalConstraintLoss(nn.Module):
+    def __init__(self, sample_rate: int = 500, weight_algebra: float = 1.0, weight_morph: float = 1.0, weight_frequency: float = 0.5):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.weight_algebra = weight_algebra
+        self.weight_morph = weight_morph
+        self.weight_frequency = weight_frequency
+
+    def algebraic_constraint(self, pred: torch.Tensor) -> torch.Tensor:
+        if pred.shape[1] < 12:
+            raise ValueError('Predicted ECG tensor must have 12 leads for physiology constraints.')
+
+        I = pred[:, 0]
+        II = pred[:, 1]
+        III = II - I
+        aVR = -(I + II) / 2.0
+        aVL = I - II / 2.0
+        aVF = II - I / 2.0
+
+        n = pred.shape[-1]
+        target = torch.zeros_like(pred)
+        target[:, 2] = III
+        target[:, 3] = aVR
+        target[:, 4] = aVL
+        target[:, 5] = aVF
+
+        loss = F.mse_loss(pred[:, 2:6], target[:, 2:6], reduction='none').mean()
+        return loss
+
+    def morphology_constraint(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # A simple reconstruction of morphology terms via smoothed envelopes and RR-like peak interval features.
+        pred_s = pred.detach() if pred.requires_grad else pred
+        target_s = target.detach() if target.requires_grad else target
+
+        # approximate morphology similarity using signal envelope + energy concentration around bright beats.
+        pred_env = torch.abs(torch.fft.rfft(pred_s, dim=-1))
+        target_env = torch.abs(torch.fft.rfft(target_s, dim=-1))
+
+        if pred_env.shape[1] == 12:
+            pred_env = pred_env[:, 0:6]
+            target_env = target_env[:, 0:6]
+        return F.mse_loss(pred_env, target_env)
+
+    def frequency_constraint(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        spec_pred = torch.abs(torch.fft.rfft(pred, dim=-1))
+        spec_target = torch.abs(torch.fft.rfft(target, dim=-1))
+        return F.mse_loss(spec_pred, spec_target)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        algebra_loss = self.algebraic_constraint(pred)
+        morph_loss = self.morphology_constraint(pred, target)
+        freq_loss = self.frequency_constraint(pred, target)
+        total = self.weight_algebra * algebra_loss + self.weight_morph * morph_loss + self.weight_frequency * freq_loss
+        return total
+
+
+if __name__ == '__main__':
+    loss_fn = PhysiologicalConstraintLoss()
+    pred = torch.randn(2, 12, 60000)
+    target = torch.randn(2, 12, 60000)
+    out = loss_fn(pred, target)
+    print(out)
