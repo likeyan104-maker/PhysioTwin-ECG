@@ -1,0 +1,44 @@
+# PTB-XL usage notes for PhysioTwin-ECG
+
+## PTB-XL official download
+
+The official PTB-XL dataset is hosted on PhysioNet:
+
+https://physionet.org/static/published-projects/ptb-xl/ptb-xl-a-large-publicly-available-electrocardiography-dataset-1.0.2.zip
+
+## Quick start
+
+```bash
+chmod +x scripts/download_ptbxl.sh
+./scripts/download_ptbxl.sh
+```
+
+If `aria2c` is installed, this uses a fast parallel download. Otherwise it falls back to `wget` or `curl`.
+
+## Data layout
+
+After extraction, files are placed under:
+
+```text
+data/ptbxl/
+├── ptbxl_database.csv
+├── ... waveform files and metadata ...
+```
+
+## Audit step
+
+```bash
+python data_audit.py --data-dir data/ptbxl --output-dir reports/ptbxl_audit
+```
+
+This produces:
+
+- reports/ptbxl_audit/summary.json
+- reports/ptbxl_audit/summary.csv
+- reports/ptbxl_audit/data_structure_report.txt
+
+## Notes
+
+- PTB-XL is a public ECG dataset and should be used according to PhysioNet and dataset licensing terms.
+- Confirm the 500 Hz sampling rate and check signal lengths before training.
+- For competition/medical-research usage, always keep a strict train/val/test split and avoid leakage.

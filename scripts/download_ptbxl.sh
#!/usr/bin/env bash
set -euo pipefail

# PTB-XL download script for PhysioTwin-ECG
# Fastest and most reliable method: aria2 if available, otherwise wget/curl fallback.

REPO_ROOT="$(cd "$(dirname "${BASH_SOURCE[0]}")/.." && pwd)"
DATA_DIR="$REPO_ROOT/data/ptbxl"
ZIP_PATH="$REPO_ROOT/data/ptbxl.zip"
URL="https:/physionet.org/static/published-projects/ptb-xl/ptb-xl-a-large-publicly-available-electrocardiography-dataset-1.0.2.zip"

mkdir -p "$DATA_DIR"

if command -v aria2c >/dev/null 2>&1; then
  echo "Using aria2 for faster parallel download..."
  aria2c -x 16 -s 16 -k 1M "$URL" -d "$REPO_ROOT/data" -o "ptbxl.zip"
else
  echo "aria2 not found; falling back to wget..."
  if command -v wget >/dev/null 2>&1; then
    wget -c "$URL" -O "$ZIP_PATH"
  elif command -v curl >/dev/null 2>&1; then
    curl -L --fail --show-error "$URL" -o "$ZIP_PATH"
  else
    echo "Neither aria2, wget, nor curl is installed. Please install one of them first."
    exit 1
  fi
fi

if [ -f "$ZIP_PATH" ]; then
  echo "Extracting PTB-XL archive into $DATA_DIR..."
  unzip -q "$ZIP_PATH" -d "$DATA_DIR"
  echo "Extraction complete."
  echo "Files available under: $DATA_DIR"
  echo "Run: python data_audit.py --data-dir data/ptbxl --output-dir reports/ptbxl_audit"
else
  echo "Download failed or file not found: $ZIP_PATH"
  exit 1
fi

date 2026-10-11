@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# PTB-XL download script for PhysioTwin-ECG
+# Fastest and most reliable method: aria2 if available, otherwise wget/curl fallback.
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="$REPO_ROOT/data/ptbxl"
+ZIP_PATH="$REPO_ROOT/data/ptbxl.zip"
+URL="https://physionet.org/static/published-projects/ptb-xl/ptb-xl-a-large-publicly-available-electrocardiography-dataset-1.0.2.zip"
+
+mkdir -p "$DATA_DIR"
+
+if command -v aria2c >/dev/null 2>&1; then
+  echo "Using aria2 for faster parallel download..."
+  aria2c -x 16 -s 16 -k 1M "$URL" -d "$REPO_ROOT/data" -o "ptbxl.zip"
+else
+  echo "aria2 not found; falling back to wget..."
+  if command -v wget >/dev/null 2>&1; then
+    wget -c "$URL" -O "$ZIP_PATH"
+  elif command -v curl >/dev/null 2>&1; then
+    curl -L --fail --show-error "$URL" -o "$ZIP_PATH"
+  else
+    echo "Neither aria2, wget, nor curl is installed. Please install one of them first."
+    exit 1
+  fi
+fi
+
+# Extract to data/ptbxl
+if [ -f "$ZIP_PATH" ]; then
+  echo "Extracting PTB-XL archive into $DATA_DIR..."
+  unzip -q "$ZIP_PATH" -d "$DATA_DIR"
+  echo "Extraction complete."
+  echo "Files available under: $DATA_DIR"
+  echo "Hint: run python data_audit.py --data-dir data/ptbxl --output-dir reports/ptbxl_audit"
+else
+  echo "Download failed or file not found: $ZIP_PATH"
+  exit 1
+fi
